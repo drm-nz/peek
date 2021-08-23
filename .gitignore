@@ -1,6 +1,6 @@
 Peek.db
 bin/
+obj/
 *.v2
 .vs/
 .vscode/
-.vs/Peek/v16/.suo
