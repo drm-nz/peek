@@ -18,7 +18,7 @@ namespace Peek
         private static string message = string.Empty;
         private static bool runOnce;
         private static bool useSlack;
-        private static int slackReportInterval;
+        public static int slackReportInterval;
 
         static void Main(string[] args)
         {
@@ -30,7 +30,7 @@ namespace Peek
             
             runOnce = String.IsNullOrEmpty(configuration["RunOnce"]) ? false : Convert.ToBoolean(configuration["RunOnce"]);
             useSlack = String.IsNullOrEmpty(configuration["UseSlack"]) ? false : Convert.ToBoolean(configuration["UseSlack"]);
-            slackReportInterval = String.IsNullOrEmpty(configuration["SlackReportInterval"]) ? 43200 : Convert.ToInt32(configuration["SlackReportInterval"]); // Default to 12 hours
+            slackReportInterval = String.IsNullOrEmpty(configuration["SlackReportInterval"]) ? 14400 : Convert.ToInt32(configuration["SlackReportInterval"]); // Default to 12 hours
             
             // Initialize NoSQL db connection and retreive all current records (if any). Create db if doesn't exist.
             LiteCollection<SiteCheck> dbCollection;
@@ -77,7 +77,8 @@ namespace Peek
                         LastState = 200,
                         Message = string.Empty,
                         NextCheck = DateTime.Now,
-                        ConfigUpdated = DateTime.Now
+                        ConfigUpdated = DateTime.Now,
+                        NextNotification = DateTime.Now
                     };
                     _ = collection.Insert(newRecord);
                 }
@@ -106,7 +107,7 @@ namespace Peek
                     {
                         HttpResponseMessage response = null;
                         string responseContent = string.Empty;
-                        int statusCode = 444; // Use 'No Response' for starters
+                        int statusCode = 410; // Use 'Gone' for starters
                         message = string.Empty;
 
                         // Make a request to the site
@@ -156,18 +157,18 @@ namespace Peek
 
                         // Get matching database record to compare
                         SiteCheck storedRecord = collection.Find(Query.EQ("URL", currentCheck.URL)).First();
-
-                        // Send notification if status has changed since our last check (only if Slack Notifications are enabled)
-                        if (useSlack && DateTime.Now > currentCheck.LastReported.AddSeconds(slackReportInterval))
+                                                
+                        if (useSlack)
                         {
-                            SendSlackNotification(currentCheck.URL, storedRecord.LastState, currentCheck.LastState, currentCheck.Message);
-                            currentCheck.LastReported = DateTime.Now;
+                            SendSlackNotification(currentCheck.URL, storedRecord.LastState, currentCheck.LastState, currentCheck.NextNotification, currentCheck.Message);
+                            currentCheck.NextNotification = currentCheck.NextNotification.Update();
                         }
 
                         // Update site state in the database
                         storedRecord.LastState = currentCheck.LastState;
                         storedRecord.Message = currentCheck.Message;
                         storedRecord.NextCheck = currentCheck.NextCheck;
+                        storedRecord.NextNotification = currentCheck.NextNotification;
                         _ = collection.Update(storedRecord);
 
                         // Print current results to Console/Log
@@ -198,7 +199,7 @@ namespace Peek
             return arg4 == SslPolicyErrors.None;
         }
 
-        public static void SendSlackNotification(string url, int previousState, int currentState, string message)            
+        public static void SendSlackNotification(string url, int previousState, int currentState, DateTime nextNotification, string message)            
         {           
             if (!String.IsNullOrEmpty(configuration["SlackWebHookURL"]))
             {                
@@ -221,18 +222,18 @@ namespace Peek
                     {
                         status = "recovered";
                         colour = "good";                        
-                    }
-                    // If it was ok and still is, but there is an important message (information)
-                    else if (Math.Abs(previousState) < 300 && Math.Abs(currentState) < 300 && !String.IsNullOrEmpty(message))
+                    }                 
+                    // If it was ok and still is, but there is an important message (information). Don't report it every time.
+                    else if (Math.Abs(previousState) < 300 && Math.Abs(currentState) < 300 && !String.IsNullOrEmpty(message) && DateTime.Now > nextNotification)
                     {
                         status = "information";
                         colour = "warning";                        
-                    }                                     
+                    }
                     // If there is a change, but we're unsure how important it is (status change)
                     else if (previousState != currentState)
                     {
                         status = "status change";
-                        colour = "warning";                        
+                        colour = "warning";
                     }
 
                     if (!String.IsNullOrEmpty(status)) { 

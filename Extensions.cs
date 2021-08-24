@@ -29,6 +29,11 @@ namespace Peek
         {
             return date.ToString("yyyy-MM-dd HH:mm:ss");
         }
+
+        public static DateTime Update(this DateTime nextNotification)
+        {
+            return DateTime.Now > nextNotification ? nextNotification.AddSeconds(Program.slackReportInterval) : nextNotification;
+        }        
     }
 
     public static class StringExtensions

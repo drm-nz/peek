@@ -12,6 +12,6 @@ namespace Peek
         public string Message { get; set; }
         public DateTime NextCheck { get; set; }
         public DateTime ConfigUpdated { get; set; }
-        public DateTime LastReported { get; set; }
+        public DateTime NextNotification { get; set; }
     }
 }
