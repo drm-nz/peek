@@ -2,7 +2,6 @@
 A simple self-hosted updown.io alternative for monitoring website availability with optional Slack integration.
 
 # Configuration options
-* DbConnectionString - Connection string for LiteDB. Essentially this is the name of the NoSQL database file where we store site states. Default: Peak.db
 * UseSlack - Enable or disable Slack notifications. Default: false
 * SlackReportInterval - Number of seconds between Slack notifications on continuous errors, for example, if a site is down. Default: 14400 (4h)
 * SlackWebHookURL - Your own Slack webhook URL where Peek will send its notifications to, if enabled.

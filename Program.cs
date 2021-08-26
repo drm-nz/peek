@@ -34,7 +34,7 @@ namespace Peek
             
             // Initialize NoSQL db connection and retreive all current records (if any). Create db if doesn't exist.
             LiteCollection<SiteCheck> dbCollection;
-            using (LiteDatabase db = new LiteDatabase(configuration["DbConnectionString"]))
+            using (LiteDatabase db = new LiteDatabase("filename=Peek.db; mode=Exclusive"))
             {
                 dbCollection = db.GetCollection<SiteCheck>("SiteCheckStates");
             }
