@@ -33,14 +33,12 @@ namespace Peek
             slackReportInterval = String.IsNullOrEmpty(configuration["SlackReportInterval"]) ? 14400 : Convert.ToInt32(configuration["SlackReportInterval"]); // Default to 12 hours
             
             // Initialize NoSQL db connection and retreive all current records (if any). Create db if doesn't exist.
-            LiteCollection<SiteCheck> dbCollection;
             using (LiteDatabase db = new LiteDatabase("filename=Peek.db; mode=Exclusive"))
             {
-                dbCollection = db.GetCollection<SiteCheck>("SiteCheckStates");
+                LiteCollection<SiteCheck> dbCollection = (LiteCollection<SiteCheck>)db.GetCollection<SiteCheck>("SiteCheckStates");
+                SyncConfigWithDatabase(configuration, dbCollection);
+                ProcessSiteChecks(dbCollection);
             }
-
-            SyncConfigWithDatabase(configuration, dbCollection);
-            ProcessSiteChecks(dbCollection);
         }
 
         private static void SyncConfigWithDatabase(IConfigurationRoot config, LiteCollection<SiteCheck> collection)
@@ -85,7 +83,7 @@ namespace Peek
             }
             // Delete db records that are not present in the config file anymore. We can tell this by looking a SiteCheck.ConfigUpdated
             // because every record that's in appsettings.json will have been updated/inserted at this point. 
-            IEnumerable<SiteCheck> staleRecords = collection.Find(r => r.ConfigUpdated < DateTime.Now.AddMinutes(-15));
+            IEnumerable<SiteCheck> staleRecords = collection.Find(r => r.ConfigUpdated < DateTime.Now.AddMinutes(-5));
             foreach (SiteCheck sr in staleRecords)
             {
                 collection.Delete(sr.Id);
