@@ -9,4 +9,4 @@ A simple self-hosted updown.io alternative for monitoring website availability w
 * SiteChecks - The list of sites to monitor.
   * url - The URL of the website you want to monitor.
   * interval - Number of seconds between checks.
-  * searchString - Search string to look for in the returned HTML source. This is to check the the site isn't just loading, but it is actually loading the expected content. Asterisk means that any content is acceptable, ie. we don't care.
+  * searchString - Search string to look for in the returned HTML source. This is to check that the site isn't just loading, but it is loading with the expected content. Asterisk means that any content is acceptable, ie. we don't care.
