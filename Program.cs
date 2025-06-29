@@ -1,135 +1,140 @@
 ﻿using System;
 using System.IO;
-using System.Net;
 using System.Text;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.Extensions.Configuration;
-using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using LiteDB;
+using System.Threading.Tasks;
+using JsonSerializer = System.Text.Json.JsonSerializer;
 
 namespace Peek
 {
-    class Program
+    [SuppressMessage("ReSharper", "InconsistentNaming")]
+    internal class Program
     {
         private static IConfigurationRoot configuration;
-        private static string message = string.Empty;
+        private static string message = String.Empty;
         private static bool runOnce;
         private static bool useSlack;
         public static int slackReportInterval;
 
-        static void Main(string[] args)
+        // Reuse a single HttpClient with custom SSL validation to improve performance and avoid socket exhaustion
+        private static readonly HttpClientHandler handler = new HttpClientHandler { ServerCertificateCustomValidationCallback = CustomCallback };
+        private static readonly HttpClient client = new HttpClient(handler);
+
+        static async Task Main(string[] args)
         {
-            // Configuration
-            IConfigurationBuilder configurationBuilder = new ConfigurationBuilder()
-            .SetBasePath(Directory.GetCurrentDirectory())
-            .AddJsonFile("appsettings.json");
+            // Load configuration from appsettings.json
+            var configurationBuilder = new ConfigurationBuilder()
+                .SetBasePath(Directory.GetCurrentDirectory())
+                .AddJsonFile("appsettings.json");
             configuration = configurationBuilder.Build();
-            
-            runOnce = String.IsNullOrEmpty(configuration["RunOnce"]) ? false : Convert.ToBoolean(configuration["RunOnce"]);
-            useSlack = String.IsNullOrEmpty(configuration["UseSlack"]) ? false : Convert.ToBoolean(configuration["UseSlack"]);
-            slackReportInterval = String.IsNullOrEmpty(configuration["SlackReportInterval"]) ? 14400 : Convert.ToInt32(configuration["SlackReportInterval"]); // Default to 12 hours
-            
-            // Initialize NoSQL db connection and retreive all current records (if any). Create db if doesn't exist.
-            using (LiteDatabase db = new LiteDatabase("filename=Peek.db; mode=Exclusive"))
+
+            // Read configuration values safely
+            Boolean.TryParse(configuration["RunOnce"], out runOnce);
+            Boolean.TryParse(configuration["UseSlack"], out useSlack);
+            Int32.TryParse(configuration["SlackReportInterval"], out slackReportInterval);
+            if (slackReportInterval == 0) slackReportInterval = 14400; // Default to 12 hours if missing or invalid
+
+            // Initialize NoSQL database connection and retrieve all current records (if any). Create db if it doesn't exist.
+            using (var db = new LiteDatabase("filename=Peek.db; mode=Exclusive"))
             {
-                LiteCollection<SiteCheck> dbCollection = (LiteCollection<SiteCheck>)db.GetCollection<SiteCheck>("SiteCheckStates");
-                SyncConfigWithDatabase(configuration, dbCollection);
-                ProcessSiteChecks(dbCollection);
+                var dbCollection = db.GetCollection<SiteCheck>("SiteCheckStates");
+                SyncConfigWithDatabase(configuration, dbCollection); // Ensure database reflects latest config
+                await ProcessSiteChecksAsync(dbCollection); // Begin the checking loop
             }
         }
 
-        private static void SyncConfigWithDatabase(IConfigurationRoot config, LiteCollection<SiteCheck> collection)
+        private static void SyncConfigWithDatabase(IConfigurationRoot config, ILiteCollection<SiteCheck> collection)
         {
-            // Get list of current site checks from appsettings.json
-            IConfigurationSection configValues = config.GetSection("SiteChecks");
+            // Sync each configured SiteCheck from appsettings.json into the local DB, updating existing records or inserting new ones
+            var configValues = config.GetSection("SiteChecks");
             foreach (var s in configValues.GetChildren())
             {
-                string url = s.GetValue<string>("url").Sanitize();
-                int interval = s.GetValue<int>("interval");
-                string searchString = s.GetValue<string>("searchString");
+                var url = s.GetValue<string>("url")?.Sanitize();
+                if (String.IsNullOrWhiteSpace(url)) continue; // Skip invalid or empty URLs
+                var interval = s.GetValue<int>("interval");
+                var searchString = s.GetValue<string>("searchString");
 
-                // Check if there is already a record in the db with this URL
-                SiteCheck currentRecord = null;
-                bool exists = collection.Exists(Query.EQ("URL", url));
+                var exists = collection.Exists(Query.EQ("URL", url));
 
-                // If there is, update the record
+                // Update existing record
                 if (exists)
                 {
-                    currentRecord = collection.Find(Query.EQ("URL", url)).First();
+                    var currentRecord = collection.FindOne(Query.EQ("URL", url));
                     currentRecord.Interval = interval;
                     currentRecord.SearchString = searchString;
                     currentRecord.ConfigUpdated = DateTime.Now;
-                    _ = collection.Update(currentRecord);
+                    collection.Update(currentRecord);
                 }
-                // Otherwise insert a new record for it
+                // Otherwise, insert new record
                 else
                 {
-                    SiteCheck newRecord = new SiteCheck
+                    var newRecord = new SiteCheck
                     {
                         URL = url,
                         Interval = interval,
                         SearchString = searchString,
                         LastState = 200,
-                        Message = string.Empty,
+                        Message = String.Empty,
                         NextCheck = DateTime.Now,
                         ConfigUpdated = DateTime.Now,
                         NextNotification = DateTime.Now
                     };
-                    _ = collection.Insert(newRecord);
+                    collection.Insert(newRecord);
                 }
             }
-            // Delete db records that are not present in the config file anymore. We can tell this by looking a SiteCheck.ConfigUpdated
-            // because every record that's in appsettings.json will have been updated/inserted at this point. 
-            IEnumerable<SiteCheck> staleRecords = collection.Find(r => r.ConfigUpdated < DateTime.Now.AddMinutes(-5));
-            foreach (SiteCheck sr in staleRecords)
+
+            // Delete DB records that are no longer present in the config file.
+            // We use the ConfigUpdated timestamp as a marker. Everything still in the config was just updated.
+            var staleRecords = collection.Find(r => r.ConfigUpdated < DateTime.Now.AddMinutes(-5));
+            foreach (var sr in staleRecords)
             {
                 collection.Delete(sr.Id);
             }
 
-            // And finally make sure the database is indexed by URL. If there is an index on URL already, this line does nothing.
+            // Ensure there's an index on URL for fast lookups
             collection.EnsureIndex(r => r.URL, true);
         }
 
-        private static void ProcessSiteChecks(LiteCollection<SiteCheck> collection)
+        [SuppressMessage("ReSharper", "PossibleMultipleEnumeration")]
+        private static async Task ProcessSiteChecksAsync(ILiteCollection<SiteCheck> collection)
         {
-            // Query records into an IEnumerable
-            IEnumerable<SiteCheck> SiteChecks = collection.Find(Query.All());
+            // Load current site check states from DB
+            var siteChecks = collection.Find(Query.All()).ToList();
+
             while (true)
             {
-                foreach (SiteCheck currentCheck in SiteChecks)
+                foreach (var currentCheck in siteChecks)
                 {
                     if (currentCheck.NextCheck < DateTime.Now)
                     {
                         HttpResponseMessage response = null;
-                        string responseContent = string.Empty;
-                        int statusCode = 410; // Use 'Gone' for starters
-                        message = string.Empty;
+                        var responseContent = String.Empty;
+                        var statusCode = 410; // 'Gone' is used as default failure code
+                        message = String.Empty;
 
-                        // Make a request to the site
-                        HttpClientHandler handler = new HttpClientHandler { ServerCertificateCustomValidationCallback = CustomCallback };
-                        using (HttpClient client = new HttpClient(handler))
+                        // Make a GET request to the site with cert validation
+                        try
                         {
-                            try
-                            {
-                                response = client.GetAsync(currentCheck.URL).GetAwaiter().GetResult();
-                            }
-                            catch (Exception ex)
-                            {
-                                message += $", {ex.Message}";
-                            }
+                            response = await client.GetAsync(currentCheck.URL);
+                        }
+                        catch (Exception ex)
+                        {
+                            message += $", {ex.Message}"; // Append exception message if request fails
                         }
 
+                        // Attempt to read response content if available
                         if (response != null)
                         {
                             statusCode = (int)response.StatusCode;
-
-                            // Get the actual content of HttpResponseMessage
                             try
                             {
-                                responseContent = response.Content.ReadAsStringAsync().Result;
+                                responseContent = await response.Content.ReadAsStringAsync();
                             }
                             catch (Exception ex)
                             {
@@ -137,119 +142,131 @@ namespace Peek
                             }
                         }
 
-                        // If we are looking for a particular content and it's not there, use negative HTTP status code (eg. "-200")
+                        // Determine status based on content search
                         if (currentCheck.SearchString != "*" && response != null && !responseContent.Contains(currentCheck.SearchString))
                         {
+                            // If the expected content is missing, use negative HTTP status code (eg. "-200")
                             currentCheck.LastState = statusCode - (2 * statusCode);
                         }
-                        // Otherwise if we are not looking for any particular content, or we do and it's there, use normal HTTP code (eg "200")
                         else
                         {
                             currentCheck.LastState = statusCode;
                         }
                         currentCheck.Message = message.Sanitize();
 
-                        // Only update currentCheck.NextCheck if it's in the past. This is to guard agains quick subsequent runs/restarts
-                        // shooting the next check into the distant future.
-                        currentCheck.NextCheck = currentCheck.NextCheck < DateTime.Now ? currentCheck.NextCheck.AddSeconds(currentCheck.Interval) : currentCheck.NextCheck;
+                        // Prevent NextCheck from being pushed too far into the future as a result of repeated fast loops.
+                        if (currentCheck.NextCheck < DateTime.Now)
+                        {
+                            currentCheck.NextCheck = currentCheck.NextCheck.AddSeconds(currentCheck.Interval);
+                        }
 
-                        // Get matching database record to compare
-                        SiteCheck storedRecord = collection.Find(Query.EQ("URL", currentCheck.URL)).First();
-                                                
+                        var storedRecord = collection.FindOne(Query.EQ("URL", currentCheck.URL));
+
+                        // If Slack is enabled, notify on relevant state changes
                         if (useSlack)
                         {
-                            SendSlackNotification(currentCheck.URL, storedRecord.LastState, currentCheck.LastState, currentCheck.NextNotification, currentCheck.Message);
+                            await SendSlackNotificationAsync(currentCheck.URL, storedRecord.LastState, currentCheck.LastState, currentCheck.NextNotification, currentCheck.Message);
                             currentCheck.NextNotification = currentCheck.NextNotification.Update();
                         }
 
-                        // Update site state in the database
+                        // Update DB with the new state
                         storedRecord.LastState = currentCheck.LastState;
                         storedRecord.Message = currentCheck.Message;
                         storedRecord.NextCheck = currentCheck.NextCheck;
                         storedRecord.NextNotification = currentCheck.NextNotification;
-                        _ = collection.Update(storedRecord);
+                        collection.Update(storedRecord);
 
-                        // Print current results to Console/Log
+                        // Log the outcome to console
                         Console.WriteLine($"{DateTime.Now.FormattedDate()}, {currentCheck.URL}, {Math.Abs(currentCheck.LastState)}, {currentCheck.LastState.ToStatusCodeText()} {currentCheck.Message}");
                     }
                 }
 
-                // If RunOnce is set to true, jump out of the loop
-                if (runOnce) { break; }
+                // If RunOnce is true, break out after one loop
+                if (runOnce) break;
 
-                // Once we're finished with processing and updating the list, reorder based on NextCheck. This is necessary because
-                // some sites might have more frequent checks than others. If, say, a record has a 5 second check interval but the list
-                // is so long that it takes 10 seconds to go through it, we may not be able to check the site as often as required.
-                SiteChecks = SiteChecks.OrderBy(s => s.NextCheck).ToList();
+                // Reorder checks by NextCheck so more frequent checks aren't delayed
+                siteChecks = siteChecks.OrderBy(s => s.NextCheck).ToList();
             }
         }
 
-        private static bool CustomCallback(HttpRequestMessage arg1, X509Certificate2 arg2, X509Chain arg3, SslPolicyErrors arg4)
+        private static bool CustomCallback(HttpRequestMessage req, X509Certificate2 cert, X509Chain chain, SslPolicyErrors errors)
         {
-            DateTime _30DaysAhead = DateTime.UtcNow.AddDays(30);
-            DateTime certExpiry = Convert.ToDateTime(arg2.GetExpirationDateString());            
+            // Custom certificate validation: warn if cert expires within the next 30 days
+            var threshold = DateTime.UtcNow.AddDays(30);
+            var certExpiry = Convert.ToDateTime(cert.GetExpirationDateString());
 
-            if (certExpiry < _30DaysAhead)
+            if (certExpiry < threshold)
             {
-                int daysToGo = (certExpiry - DateTime.UtcNow).Days;
-                message += $", Certificate is expiring in {daysToGo} days at {certExpiry.FormattedDate()} UTC";                
+                var daysToGo = (certExpiry - DateTime.UtcNow).Days;
+                message += $", Certificate is expiring in {daysToGo} days at {certExpiry.FormattedDate()} UTC";
             }
-            return arg4 == SslPolicyErrors.None;
+
+            // Proceed only if there are no SSL policy errors
+            return errors == SslPolicyErrors.None;
         }
 
-        public static void SendSlackNotification(string url, int previousState, int currentState, DateTime nextNotification, string message)            
-        {           
-            if (!String.IsNullOrEmpty(configuration["SlackWebHookURL"]))
-            {                
-                string status = String.Empty;
-                string colour = String.Empty;
+        private static async Task SendSlackNotificationAsync(string url, int previousState, int currentState, DateTime nextNotification, string message)
+        {
+            if (String.IsNullOrEmpty(configuration["SlackWebHookURL"])) return; // Skip if no webhook is configured
 
-                try
+            string status = null;
+            string colour = null;
+
+            // Determine the nature of the change
+            if ((Math.Abs(previousState) < 300 && Math.Abs(currentState) > 400) || (previousState > 0 && currentState < 0 && Math.Abs(currentState) < 300))
+            {
+                status = "down"; // Site went down
+                colour = "danger";
+            }
+            else if ((Math.Abs(previousState) > 400 && Math.Abs(currentState) < 300) || (previousState < 0 && currentState > 0 && currentState < 300))
+            {
+                status = "recovered"; // Site recovered
+                colour = "good";
+            }
+            else if (Math.Abs(previousState) < 300 && Math.Abs(currentState) < 300 && !String.IsNullOrEmpty(message) && DateTime.Now > nextNotification)
+            {
+                status = "information"; // Info message without a state change
+                colour = "warning";
+            }
+            else if (previousState != currentState)
+            {
+                status = "status change"; // Some other status variation
+                colour = "warning";
+            }
+
+            if (String.IsNullOrEmpty(status)) return;
+
+            message = Environment.NewLine + message.Sanitize();
+            var messageBody = $"Last known state: HTTP {Math.Abs(previousState)}, {previousState.ToStatusCodeText()}\nCurrent state: HTTP {Math.Abs(currentState)}, {currentState.ToStatusCodeText()}{message}";
+
+            // Build structured JSON payload for Slack
+            var payload = new
+            {
+                channel = "#notifications",
+                username = "Peek",
+                text = $"*{status.ToUpper()}*",
+                attachments = new[]
                 {
-                    WebRequest request = WebRequest.Create(configuration["SlackWebHookURL"]);
-                    request.Method = "POST";
-               
-                    // If it was ok previously but it isn't now or we've lost the correct content (down)
-                    if ((Math.Abs(previousState) < 300 && Math.Abs(currentState) > 400) || (previousState > 0 && currentState < 0 && Math.Abs(currentState) < 300))
+                    new
                     {
-                        status = "down";
-                        colour = "danger";                        
-                    }
-                    // If it wasn't ok previously but it is now or recovered from incorrect content (recovered)
-                    else if ((Math.Abs(previousState) > 400 && Math.Abs(currentState) < 300) || (previousState < 0 && currentState > 0 && currentState < 300))
-                    {
-                        status = "recovered";
-                        colour = "good";                        
-                    }                 
-                    // If it was ok and still is, but there is an important message (information). Don't report it every time.
-                    else if (Math.Abs(previousState) < 300 && Math.Abs(currentState) < 300 && !String.IsNullOrEmpty(message) && DateTime.Now > nextNotification)
-                    {
-                        status = "information";
-                        colour = "warning";                        
-                    }
-                    // If there is a change, but we're unsure how important it is (status change)
-                    else if (previousState != currentState)
-                    {
-                        status = "status change";
-                        colour = "warning";
-                    }
-
-                    if (!String.IsNullOrEmpty(status)) { 
-                        message = Environment.NewLine + message.Sanitize();
-                        string messageBody = $"Last known state: HTTP {Math.Abs(previousState)}, {previousState.ToStatusCodeText()}\nCurrent state: HTTP {Math.Abs(currentState)}, {currentState.ToStatusCodeText()}{message}";
-                        string payload = $"payload={{'channel': '#notifications', 'username': 'Peek','text':'*{status.ToUpper()}*', 'attachments': [{{ 'color':'{colour}', 'fields': [{{ 'title':'{url}', 'value': '{messageBody}' }}] }}] }}";
-                        byte[] byteArray = Encoding.UTF8.GetBytes(payload);
-                        request.ContentType = "application/x-www-form-urlencoded";
-                        request.ContentLength = byteArray.Length;
-                        Stream dataStream = request.GetRequestStream();
-                        dataStream.Write(byteArray, 0, byteArray.Length);
-                        _ = request.GetResponse();
+                        color = colour,
+                        fields = new[]
+                        {
+                            new { title = url, value = messageBody }
+                        }
                     }
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Unable to post notification to Slack: {ex.Message}");
-                }
+            };
+
+            try
+            {
+                var json = JsonSerializer.Serialize(payload);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                await client.PostAsync(configuration["SlackWebHookURL"], content);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Unable to post notification to Slack: {ex.Message}");
             }
         }
     }
