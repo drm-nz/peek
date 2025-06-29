@@ -48,8 +48,8 @@ A simple self-hosted updown.io alternative for monitoring website availability w
 
 Peek supports two modes of operation:
 
-- **Continuous Mode**: Peek runs indefinitely and checks each configured site at the specified interval. This is the default.
-- **Run Once Mode**: Peek performs a single round of checks and then exits. Ideal for solutions where scheduling is done via OS schedulers, like cron, Windows Task Scheduler, etc. Set `RunOnce` to `true` in the config file.
+- **Continuous Mode**: Peek runs indefinitely and checks each configured site at the specified interval. This is the default mode.
+- **Run Once Mode**: Peek performs a single round of checks and then exits. Ideal for solutions where scheduling is done via OS schedulers, like cron, Windows Task Scheduler, etc. For this mode, set `RunOnce` to `true` in the config file.
 
 ---
 
