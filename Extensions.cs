@@ -14,14 +14,6 @@ public static class StatusCodeExtensions
     }
 }
 
-public static class DateTimeExtensions
-{
-    public static string FormattedDate(this DateTime date)
-    {
-        return date.ToString("yyyy-MM-dd HH:mm:ss");
-    }
-}
-
 public static class StringExtensions
 {
     public static string? Sanitize(this string? s)

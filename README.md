@@ -1,6 +1,6 @@
 # Peek
 
-A lightweight, self-hosted website availability monitor with optional Slack integration — a simple alternative to updown.io. Built with .NET 9 and LiteDB.
+A lightweight, self-hosted website availability monitor with optional Slack integration — a simple alternative to updown.io. Built with .NET 10 and LiteDB.
 
 Peek performs one round of health checks against the configured sites and exits, making it ideal for use with `cron`, `systemd` timers, or any scheduler.
 
@@ -142,3 +142,33 @@ Create a service and timer unit to run Peek every 5 minutes.
 - **Resilience**: Peek doesn't restart itself; use `cron`, `systemd`, or a scheduler to supervise it.
 - **Concurrency**: Set `MaxConcurrency` to check multiple sites in parallel. Use with caution to avoid rate-limiting or overloading targets.
 - **Environment variable**: `PEEK_SLACK_WEBHOOK_URL` overrides the `SlackWebHookURL` config setting.
+- **Retry behaviour**: Failed HTTP requests are automatically retried once after 5 seconds.
+- **Content verification**: Set `searchString` to verify response body content. Use `"*"` to skip content checks. Mismatches are reported as negative status codes.
+
+---
+
+## Development
+
+### Requirements
+
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+
+### Build
+
+```bash
+dotnet build
+```
+
+### Test
+
+```bash
+dotnet test
+```
+
+The test suite includes 139 unit tests covering configuration validation, site checking, retry logic, content matching, Slack notifications, certificate validation, logging, and database synchronisation. Code coverage exceeds 90%.
+
+### Publish
+
+```bash
+dotnet publish -c Release -o ./publish
+```

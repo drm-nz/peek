@@ -2,6 +2,7 @@ Peek.db
 logs/
 bin/
 obj/
+coverage/
 *.v2
 .vs/
 .vscode/

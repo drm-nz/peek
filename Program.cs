@@ -204,9 +204,12 @@ internal class Program
             if (_useSlack && !string.IsNullOrEmpty(_slackWebhook))
             {
                 var stored = collection.FindOne(Query.EQ("URL", site.URL));
-                await SendSlackNotificationAsync(
-                    site.URL, stored.LastState, site.LastState,
-                    site.NextNotification, site.Message);
+                if (stored != null)
+                {
+                    await SendSlackNotificationAsync(
+                        site.URL, stored.LastState, site.LastState,
+                        site.NextNotification, site.Message);
+                }
             }
 
             site.NextNotification = DateTime.Now > site.NextNotification
@@ -214,11 +217,14 @@ internal class Program
                 : site.NextNotification;
 
             var record = collection.FindOne(Query.EQ("URL", site.URL));
-            record.LastState = site.LastState;
-            record.Message = site.Message;
-            record.NextCheck = site.NextCheck;
-            record.NextNotification = site.NextNotification;
-            collection.Update(record);
+            if (record != null)
+            {
+                record.LastState = site.LastState;
+                record.Message = site.Message;
+                record.NextCheck = site.NextCheck;
+                record.NextNotification = site.NextNotification;
+                collection.Update(record);
+            }
         }
 
         return (due.Count, failed);
@@ -255,14 +261,17 @@ internal class Program
         string? responseContent = null;
         if (response != null)
         {
-            statusCode = (int)response.StatusCode;
-            try
+            using (response)
             {
-                responseContent = await response.Content.ReadAsStringAsync();
-            }
-            catch (Exception ex)
-            {
-                messages.Add(ex.Message);
+                statusCode = (int)response.StatusCode;
+                try
+                {
+                    responseContent = await response.Content.ReadAsStringAsync();
+                }
+                catch (Exception ex)
+                {
+                    messages.Add(ex.Message);
+                }
             }
         }
 
@@ -289,7 +298,7 @@ internal class Program
             if (cert != null)
             {
                 var threshold = DateTime.UtcNow.AddDays(30);
-                var expiry = Convert.ToDateTime(cert.GetExpirationDateString());
+                var expiry = cert.NotAfter;
                 if (expiry < threshold)
                 {
                     var days = (expiry - DateTime.UtcNow).Days;

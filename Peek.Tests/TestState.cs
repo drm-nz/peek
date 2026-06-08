@@ -12,7 +12,7 @@ public static class TestState
     public static void RestoreDefaults()
     {
         Program.Client = OriginalClient;
-        Program._slackWebhook = OriginalSlackWebhook;
+        Program._slackWebhook = OriginalSlackWebhook ?? string.Empty;
         Program._useSlack = OriginalUseSlack;
         Program._slackReportInterval = OriginalSlackReportInterval;
     }

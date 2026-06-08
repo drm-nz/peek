@@ -26,7 +26,8 @@ public static class Log
 
     private static void Write(string level, string message)
     {
-        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        var now = DateTime.Now;
+        var timestamp = now.ToString("yyyy-MM-dd HH:mm:ss");
         var line = $"{timestamp} [{level}] {message}";
         Console.WriteLine(line);
 
@@ -34,7 +35,7 @@ public static class Log
 
         lock (Lock)
         {
-            var path = Path.Combine(_logDir, $"peek-{DateTime.Now:yyyy-MM-dd}.log");
+            var path = Path.Combine(_logDir, $"peek-{now:yyyy-MM-dd}.log");
             File.AppendAllText(path, line + Environment.NewLine);
         }
     }
