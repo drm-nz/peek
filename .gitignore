@@ -1,4 +1,5 @@
 Peek.db
+logs/
 bin/
 obj/
 *.v2
