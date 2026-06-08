@@ -5,3 +5,5 @@ obj/
 *.v2
 .vs/
 .vscode/
+.idea/
+.DS_Store
