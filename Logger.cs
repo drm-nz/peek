@@ -11,7 +11,13 @@ public static class Log
     public static void Initialise(string? logDir = null)
     {
         _logDir = logDir ?? Path.Combine(Environment.CurrentDirectory, "logs");
-        Directory.CreateDirectory(_logDir);
+        if (_logDir != null)
+            Directory.CreateDirectory(_logDir);
+    }
+
+    public static void Reset()
+    {
+        _logDir = null;
     }
 
     public static void Info(string message) => Write("INFO", message);

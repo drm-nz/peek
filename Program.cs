@@ -20,18 +20,19 @@ namespace Peek;
 
 internal class Program
 {
-    private static readonly HttpClientHandler Handler = new()
+    internal static HttpClientHandler Handler = new()
     {
         ServerCertificateCustomValidationCallback = CertificateCallback
     };
 
-    private static readonly HttpClient Client = new(Handler);
+    internal static HttpClient Client = new(Handler);
 
-    private static IConfigurationRoot _config = null!;
-    private static string _slackWebhook = string.Empty;
-    private static string _slackChannel = "#notifications";
-    private static int _slackReportInterval = 14400;
-    private static bool _useSlack;
+    internal static IConfigurationRoot _config = null!;
+    internal static string _slackWebhook = string.Empty;
+    internal static string _slackChannel = "#notifications";
+    internal static int _slackReportInterval = 14400;
+    internal static bool _useSlack;
+    internal static int RetryDelayMs = 5000;
 
     static async Task<int> Main()
     {
@@ -69,7 +70,7 @@ internal class Program
         return failed > 0 ? 1 : 0;
     }
 
-    private static bool ValidateConfig()
+    internal static bool ValidateConfig()
     {
         var envWebhook = Environment.GetEnvironmentVariable("PEEK_SLACK_WEBHOOK_URL");
         var errors = GetConfigErrors(_config, envWebhook, out _useSlack, out _slackReportInterval);
@@ -122,7 +123,7 @@ internal class Program
         return errors;
     }
 
-    private static void SyncConfigWithDatabase(ILiteCollection<SiteCheck> collection)
+    internal static void SyncConfigWithDatabase(ILiteCollection<SiteCheck> collection)
     {
         foreach (var s in _config.GetSection("SiteChecks").GetChildren())
         {
@@ -163,7 +164,7 @@ internal class Program
         collection.EnsureIndex(r => r.URL, true);
     }
 
-    private static async Task<(int Total, int Failed)> ProcessSiteChecksAsync(
+    internal static async Task<(int Total, int Failed)> ProcessSiteChecksAsync(
         ILiteCollection<SiteCheck> collection)
     {
         var sites = collection.FindAll().ToList();
@@ -223,7 +224,7 @@ internal class Program
         return (due.Count, failed);
     }
 
-    private static async Task CheckSiteAsync(SiteCheck site)
+    internal static async Task CheckSiteAsync(SiteCheck site)
     {
         var messages = new List<string>();
         HttpResponseMessage? response = null;
@@ -245,7 +246,7 @@ internal class Program
                 if (attempt == 1)
                 {
                     Log.Warn($"Retrying {site.URL}: {ex.Message}");
-                    await Task.Delay(5_000);
+                    await Task.Delay(RetryDelayMs);
                     sw.Restart();
                 }
             }
@@ -280,7 +281,7 @@ internal class Program
             Log.Info(logLine);
     }
 
-    private static bool CertificateCallback(
+    internal static bool CertificateCallback(
         HttpRequestMessage req, X509Certificate2? cert, X509Chain? chain, SslPolicyErrors errors)
     {
         try
@@ -306,7 +307,7 @@ internal class Program
         return errors == SslPolicyErrors.None;
     }
 
-    private static async Task SendSlackNotificationAsync(
+    internal static async Task SendSlackNotificationAsync(
         string url, int previousState, int currentState,
         DateTime nextNotification, string message)
     {
