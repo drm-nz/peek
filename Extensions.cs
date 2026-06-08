@@ -24,7 +24,7 @@ public static class DateTimeExtensions
 
 public static class StringExtensions
 {
-    public static string Sanitize(this string s)
+    public static string? Sanitize(this string? s)
     {
         if (string.IsNullOrEmpty(s)) return s;
         return s.TrimStart(',').Trim();

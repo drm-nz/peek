@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Security;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
@@ -12,6 +13,8 @@ using System.Threading.Tasks;
 using LiteDB;
 using Microsoft.Extensions.Configuration;
 using JsonSerializer = System.Text.Json.JsonSerializer;
+
+[assembly: InternalsVisibleTo("Peek.Tests")]
 
 namespace Peek;
 
@@ -68,21 +71,34 @@ internal class Program
 
     private static bool ValidateConfig()
     {
+        var envWebhook = Environment.GetEnvironmentVariable("PEEK_SLACK_WEBHOOK_URL");
+        var errors = GetConfigErrors(_config, envWebhook, out _useSlack, out _slackReportInterval);
+
+        if (errors.Count == 0) return true;
+
+        foreach (var err in errors)
+            Log.Error($"Config: {err}");
+        return false;
+    }
+
+    internal static List<string> GetConfigErrors(
+        IConfigurationRoot config, string? slackWebhookFromEnv,
+        out bool useSlack, out int slackReportInterval)
+    {
         var errors = new List<string>();
 
-        _useSlack = _config.GetValue<bool>("UseSlack");
-        _slackReportInterval = _config.GetValue<int>("SlackReportInterval");
-        if (_slackReportInterval <= 0) _slackReportInterval = 14400;
+        useSlack = config.GetValue<bool>("UseSlack");
+        slackReportInterval = config.GetValue<int>("SlackReportInterval");
+        if (slackReportInterval <= 0) slackReportInterval = 14400;
 
-        if (_useSlack)
+        if (useSlack)
         {
-            var envWebhook = Environment.GetEnvironmentVariable("PEEK_SLACK_WEBHOOK_URL");
-            var configWebhook = _config["SlackWebHookURL"];
-            if (string.IsNullOrWhiteSpace(envWebhook) && string.IsNullOrWhiteSpace(configWebhook))
+            var configWebhook = config["SlackWebHookURL"];
+            if (string.IsNullOrWhiteSpace(slackWebhookFromEnv) && string.IsNullOrWhiteSpace(configWebhook))
                 errors.Add("UseSlack is true but no webhook URL configured. Set SlackWebHookURL in config or PEEK_SLACK_WEBHOOK_URL env var.");
         }
 
-        var sites = _config.GetSection("SiteChecks").GetChildren().ToList();
+        var sites = config.GetSection("SiteChecks").GetChildren().ToList();
         if (sites.Count == 0)
             errors.Add("No SiteChecks configured");
 
@@ -103,14 +119,7 @@ internal class Program
                 errors.Add($"Site '{url}' has interval < 5s");
         }
 
-        if (errors.Count > 0)
-        {
-            foreach (var err in errors)
-                Log.Error($"Config: {err}");
-            return false;
-        }
-
-        return true;
+        return errors;
     }
 
     private static void SyncConfigWithDatabase(ILiteCollection<SiteCheck> collection)
@@ -256,17 +265,9 @@ internal class Program
             }
         }
 
-        if (site.SearchString != "*" && response != null && responseContent != null &&
-            !responseContent.Contains(site.SearchString))
-        {
-            site.LastState = -statusCode;
-        }
-        else
-        {
-            site.LastState = statusCode;
-        }
+        site.LastState = DetermineStatusWithContentCheck(statusCode, responseContent, site.SearchString);
 
-        site.Message = string.Join(", ", messages).Sanitize();
+        site.Message = string.Join(", ", messages).Sanitize() ?? string.Empty;
         site.NextCheck = DateTime.Now.AddSeconds(site.Interval);
 
         var isFailure = Math.Abs(site.LastState) >= 400 || response == null;
@@ -311,42 +312,14 @@ internal class Program
     {
         if (string.IsNullOrEmpty(_slackWebhook)) return;
 
-        string? status = null;
-        string? colour = null;
-
-        var absPrev = Math.Abs(previousState);
-        var absCurr = Math.Abs(currentState);
-
-        if ((absPrev < 300 && absCurr > 400) ||
-            (previousState > 0 && currentState < 0 && absCurr < 300))
-        {
-            status = "down";
-            colour = "danger";
-        }
-        else if ((absPrev > 400 && absCurr < 300) ||
-                 (previousState < 0 && currentState > 0 && absCurr < 300))
-        {
-            status = "recovered";
-            colour = "good";
-        }
-        else if (absPrev < 300 && absCurr < 300 &&
-                 !string.IsNullOrEmpty(message) && DateTime.Now > nextNotification)
-        {
-            status = "information";
-            colour = "warning";
-        }
-        else if (previousState != currentState)
-        {
-            status = "status change";
-            colour = "warning";
-        }
-
+        var (status, colour) = DetermineSlackStatus(
+            previousState, currentState, message, nextNotification, DateTime.Now);
         if (status == null) return;
 
         var slackMsg = $"\n{message.Sanitize()}";
         var text =
-            $"Last state: HTTP {absPrev}, {previousState.ToStatusCodeText()}\n" +
-            $"Current state: HTTP {absCurr}, {currentState.ToStatusCodeText()}{slackMsg}";
+            $"Last state: HTTP {Math.Abs(previousState)}, {previousState.ToStatusCodeText()}\n" +
+            $"Current state: HTTP {Math.Abs(currentState)}, {currentState.ToStatusCodeText()}{slackMsg}";
 
         var payload = new
         {
@@ -376,5 +349,39 @@ internal class Program
         {
             Log.Error($"Failed to send Slack notification: {ex.Message}");
         }
+    }
+
+    internal static (string? Status, string? Colour) DetermineSlackStatus(
+        int previousState, int currentState, string message,
+        DateTime nextNotification, DateTime now)
+    {
+        var absPrev = Math.Abs(previousState);
+        var absCurr = Math.Abs(currentState);
+
+        if ((absPrev < 300 && absCurr > 400) ||
+            (previousState > 0 && currentState < 0 && absCurr < 300))
+            return ("down", "danger");
+
+        if ((absPrev > 400 && absCurr < 300) ||
+            (previousState < 0 && currentState > 0 && absCurr < 300))
+            return ("recovered", "good");
+
+        if (absPrev < 300 && absCurr < 300 &&
+            !string.IsNullOrEmpty(message) && now > nextNotification)
+            return ("information", "warning");
+
+        if (previousState != currentState)
+            return ("status change", "warning");
+
+        return (null, null);
+    }
+
+    internal static int DetermineStatusWithContentCheck(
+        int httpStatus, string? responseContent, string? searchString)
+    {
+        if (searchString != null && searchString != "*" &&
+            responseContent != null && !responseContent.Contains(searchString))
+            return -httpStatus;
+        return httpStatus;
     }
 }

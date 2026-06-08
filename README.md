@@ -1,104 +1,144 @@
 # Peek
 
-A lightweight, self-hosted website uptime monitoring tool — a minimal alternative to services like UpDown.io. Peek periodically checks a list of configured URLs, validates responses, persists state to a local LiteDB database, and optionally sends Slack notifications when a site goes down or recovers.
+A lightweight, self-hosted website availability monitor with optional Slack integration — a simple alternative to updown.io. Built with .NET 9 and LiteDB.
+
+Peek performs one round of health checks against the configured sites and exits, making it ideal for use with `cron`, `systemd` timers, or any scheduler.
 
 ---
 
 ## Configuration
 
-| Setting | Description |
-|---|---|
-| `RunOnce` | If `true`, Peek runs one batch of checks and exits (ideal for cron). If `false`, runs continuously in a loop. |
-| `UseSlack` | Enable Slack notifications. |
-| `SlackWebHookURL` | Slack Incoming Webhook URL. Required if `UseSlack` is `true`. Can be overridden by the `PEEK_SLACK_WEBHOOK_URL` environment variable. |
-| `SlackChannel` | Slack channel to post notifications to (default `#notifications`). |
-| `SlackReportInterval` | Minimum seconds between Slack notifications for non-critical messages (default `14400` = 4 hours). |
-| `HttpTimeoutSeconds` | HTTP request timeout in seconds (default `15`, max `120`). |
-| `MaxConcurrency` | Number of sites to check in parallel (default `1` = sequential). Increase for 50+ sites. |
-| `DbPath` | Path to the LiteDB database file (default `Peek.db`). |
-| `SiteChecks` | Array of sites to monitor. Each entry: |
-| | - `url` — the website to check |
-| | - `interval` — how often to check (seconds, minimum 5) |
-| | - `searchString` — text required in the response body. Use `"*"` to accept any content. |
+All configuration lives in `appsettings.json`.
 
-### Example
+| Setting                | Default              | Description                                                                                                                 |
+|------------------------|----------------------|-----------------------------------------------------------------------------------------------------------------------------|
+| `RunOnce`              | `true`               | **Currently unused** — Peek always runs once and exits. Reserved for a future continuous mode.                              |
+| `UseSlack`             | `false`              | Enable or disable Slack notifications.                                                                                      |
+| `SlackWebHookURL`      | `""`                 | Slack Incoming Webhook URL. Can be overridden via the `PEEK_SLACK_WEBHOOK_URL` environment variable.                        |
+| `SlackChannel`         | `"#notifications"`   | The Slack channel to post notifications to.                                                                                 |
+| `SlackReportInterval`  | `14400` (4 hours)    | Minimum seconds between Slack notifications for the same site to prevent spam while it stays down.                          |
+| `HttpTimeoutSeconds`   | `15`                 | HTTP request timeout in seconds (clamped to 1–120).                                                                         |
+| `MaxConcurrency`       | `1`                  | Maximum number of site checks to run in parallel. Set > 1 for faster checks against many sites.                             |
+| `DbPath`               | `"Peek.db"`          | Path to the LiteDB database file that stores site check state (history, last status, next check time).                      |
+| `SiteChecks`           | —                    | An array of site check definitions (see below).                                                                              |
+
+### SiteCheck entries
+
+Each entry in `SiteChecks` defines a single monitored endpoint:
+
+| Field          | Description                                                                                  |
+|----------------|----------------------------------------------------------------------------------------------|
+| `url`          | The URL to check (must be a valid `http://` or `https://` URL).                              |
+| `interval`     | Minimum seconds between checks. Must be ≥ 5.                                                 |
+| `searchString` | A substring to search for in the HTTP response body. Use `"*"` to skip content validation.   |
+
+---
+
+## Example Configuration
 
 ```json
 {
-  "RunOnce": true,
   "UseSlack": true,
   "SlackWebHookURL": "https://hooks.slack.com/services/...",
-  "SlackChannel": "#alerts",
+  "SlackChannel": "#notifications",
   "SlackReportInterval": 14400,
+  "RunOnce": true,
   "HttpTimeoutSeconds": 15,
-  "MaxConcurrency": 5,
-  "DbPath": "/data/peek/Peek.db",
+  "MaxConcurrency": 1,
+  "DbPath": "Peek.db",
   "SiteChecks": [
-    { "url": "https://example.com", "interval": 60, "searchString": "Welcome" },
-    { "url": "https://api.example.com", "interval": 30, "searchString": "*" }
+    {
+      "url": "https://example.com",
+      "interval": 60,
+      "searchString": "Example Domain"
+    },
+    {
+      "url": "https://another-site.com",
+      "interval": 300,
+      "searchString": "*"
+    }
   ]
 }
 ```
 
-### Environment Variables
-
-| Variable | Overrides |
-|---|---|
-| `PEEK_SLACK_WEBHOOK_URL` | `SlackWebHookURL` in config (use this instead of storing secrets in config files) |
-
 ---
 
-## Running
+## Running Peek
+
+Peek always runs once, checks all due sites, and exits.
 
 ```bash
-# Run once (cron-friendly)
-dotnet run --project Peek.csproj
-
-# Publish a self-contained binary
-dotnet publish -c Release -r linux-x64 --self-contained true
-./bin/Release/net9.0/linux-x64/publish/peek
-```
-
-### Modes
-
-- **Run-Once** (`RunOnce: true`): Performs a single round of due checks, logs results, sends notifications, and exits. Designed for cron, systemd timers, or similar schedulers.
-- **Continuous** (`RunOnce: false`): Runs indefinitely in a loop, checking each site at its configured interval.
-
-### Logging
-
-Peek writes structured logs to both:
-- **stdout** — captured by cron / systemd
-- **`logs/peek-YYYY-MM-DD.log`** — daily rolling files, 3 log levels (INFO, WARN, ERROR)
-
----
-
-## Behaviour
-
-- **Retry**: If a request fails due to a network error, Peek retries once after 5 seconds before marking the site as down.
-- **Certificate expiry**: If an SSL certificate expires within 30 days, a warning is logged (no alert by default).
-- **Content validation**: If `searchString` is set (not `"*"`), the response body must contain that string. A mismatch is reported with a negated status code (e.g., `-200`).
-- **State persistence**: Site status and check schedules are persisted in LiteDB, so restarts don't cause duplicate alerts.
-
----
-
-## Exit Codes
-
-| Code | Meaning |
-|---|---|
-| `0` | All checks passed |
-| `1` | One or more sites failed |
-
-Cron, systemd, and CI systems use this to trigger alerts.
-
----
-
-## Build Requirements
-
-- [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)
-
-```bash
-git clone <repo>
-cd peek
-dotnet build
 dotnet run --project Peek.csproj
 ```
+
+**Exit codes:**
+
+- `0` — All checks passed (or no sites were due).
+- `1` — One or more sites failed validation or returned an error status (≥ 400).
+
+Exit codes make it easy to use Peek with cron, systemd timers, or CI pipelines.
+
+---
+
+## Logging
+
+Peek logs to both the console and daily rolling files:
+
+- **Console:** Standard output with `[INFO]`, `[WARN]`, `[ERROR]` levels.
+- **File:** `logs/peek-YYYY-MM-DD.log` (created automatically in the working directory).
+
+Each log line includes the check result, response time in milliseconds, and any error messages.
+
+---
+
+## Slack Notifications
+
+When `UseSlack` is `true`, Peek sends notifications to the configured Slack channel for:
+
+- **Site down** — status transitions from healthy (≤ 399) to error (≥ 400).
+- **Recovery** — status transitions back to healthy.
+- **Information** — persistent errors with additional messages (rate-limited by `SlackReportInterval`).
+- **Status changes** — any other change in status code.
+
+The webhook URL can be set either in `appsettings.json` or via the `PEEK_SLACK_WEBHOOK_URL` environment variable (the environment variable takes precedence).
+
+---
+
+## How It Works
+
+1. **Config validation** — `appsettings.json` is checked for missing URLs, invalid intervals, and missing webhook when Slack is enabled.
+2. **Database sync** — Site check definitions are synced into LiteDB. New sites are inserted; removed sites are cleaned up.
+3. **Site checking** — Each due site is fetched via HTTP. Checks include:
+   - Response status code validation.
+   - Content matching against `searchString`.
+   - **Automatic retry** — failed requests are retried once after 5 seconds.
+   - **Certificate expiry warnings** — logged if a certificate expires within 30 days.
+   - **Response time** — measured and logged in milliseconds.
+4. **State persistence** — Results are written back to LiteDB, including the last status, messages, and next check schedule.
+5. **Slack notifications** — Sent for state transitions when enabled (rate-limited per site).
+6. **Exit** — Peek exits with code `0` (all OK) or `1` (failures detected).
+
+---
+
+## Running on a Schedule
+
+Because Peek runs once and exits by design, use an external scheduler to run it periodically:
+
+### cron (Linux/macOS)
+
+```cron
+*/5 * * * * cd /path/to/peek && dotnet run --project Peek.csproj
+```
+
+### systemd timer
+
+Create a service and timer unit to run Peek every 5 minutes.
+
+---
+
+## Notes
+
+- **Persistence**: Site status history is stored in a local LiteDB database (`Peek.db` by default).
+- **Resilience**: Peek doesn't restart itself; use `cron`, `systemd`, or a scheduler to supervise it.
+- **Concurrency**: Set `MaxConcurrency` to check multiple sites in parallel. Use with caution to avoid rate-limiting or overloading targets.
+- **Environment variable**: `PEEK_SLACK_WEBHOOK_URL` overrides the `SlackWebHookURL` config setting.
